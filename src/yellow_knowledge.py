@@ -70,6 +70,14 @@ Yellow Network에 대한 정보를 한국어로 친절하게 제공합니다.
 6. Yellow Korea 공지방(https://t.me/YellowKorea_ann)과 트위터(https://x.com/Yellow__Korea)를 자주 안내하세요.
 7. 대화 톤은 친근하고 프로페셔널하게 유지하세요.
 8. 답변은 간결하되 핵심 정보를 빠짐없이 전달하세요.
+
+중요 포맷 규칙:
+- 응답은 텔레그램 HTML 형식으로 작성하세요.
+- 볼드체는 반드시 <b>텍스트</b> 태그를 사용하세요. **텍스트** 마크다운을 절대 사용하지 마세요.
+- 이탤릭은 <i>텍스트</i> 태그를 사용하세요.
+- 코드는 <code>텍스트</code> 태그를 사용하세요.
+- 링크는 그대로 텍스트로 보내세요 (HTML <a> 태그 사용하지 마세요).
+- &, <, > 문자를 일반 텍스트로 쓸 때는 &amp; &lt; &gt; 로 이스케이프하세요.
 """.format(**YELLOW_INFO)
 
 
@@ -111,44 +119,44 @@ KEYWORD_RESPONSES = {
 # Auto-engagement tips
 YELLOW_TIPS = [
     (
-        "Yellow Tip\n\n"
+        "<b>Yellow Tip</b>\n\n"
         "Yellow Network의 State Channel 기술은 오프체인에서 거래를 처리하여 "
         "가스비를 절감하고 속도를 높입니다.\n\n"
         "자세히: https://t.me/YellowKorea_ann"
     ),
     (
-        "알고 계셨나요?\n\n"
+        "<b>알고 계셨나요?</b>\n\n"
         "Yellow Network는 다양한 거래소와 블록체인을 하나로 연결하여 "
         "유동성 분산 문제를 해결합니다.\n\n"
         "공식 채널: https://t.me/YellowKorea_ann"
     ),
     (
-        "Yellow 101\n\n"
+        "<b>Yellow 101</b>\n\n"
         "크로스체인 브로커 클리어링이란? 서로 다른 체인의 자산을 "
         "중개 없이 안전하게 교환할 수 있는 기술입니다.\n\n"
         "더 알아보기: https://www.yellow.org"
     ),
     (
-        "Yellow Network Update\n\n"
+        "<b>Yellow Network Update</b>\n\n"
         "Yellow Korea 공지방에서 최신 업데이트를 확인하세요!\n"
         "https://t.me/YellowKorea_ann\n\n"
         "Twitter: https://x.com/Yellow__Korea"
     ),
     (
-        "Yellow Community\n\n"
+        "<b>Yellow Community</b>\n\n"
         "Yellow Korea 커뮤니티에 참여하세요! "
         "함께 Yellow Network의 성장을 만들어갑니다.\n\n"
         "채팅방: https://t.me/YellowKorea_chat\n"
         "공지방: https://t.me/YellowKorea_ann"
     ),
     (
-        "Yellow Tip\n\n"
+        "<b>Yellow Tip</b>\n\n"
         "YELLOW 토큰은 네트워크 보안, 스테이킹, 거버넌스에 활용됩니다. "
         "토큰 홀더는 네트워크 의사결정에 참여할 수 있습니다.\n\n"
         "DYOR: https://www.yellow.org"
     ),
     (
-        "알고 계셨나요?\n\n"
+        "<b>알고 계셨나요?</b>\n\n"
         "Yellow Network는 기관급 성능을 제공하면서도 "
         "탈중앙화를 유지합니다. 중앙 서버 없이 P2P로 동작합니다.\n\n"
         "자세히: https://t.me/YellowKorea_ann"

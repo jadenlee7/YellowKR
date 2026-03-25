@@ -1,9 +1,11 @@
 """
 Yellow Korea Telegram Bot.
 Scrapes @Yellow__Korea Twitter + AI chat with users.
+All messages use HTML parse mode for proper bold/italic rendering.
 """
 
 import logging
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -13,6 +15,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from telegram.constants import ParseMode
 
 from src.config import (
     TELEGRAM_BOT_TOKEN,
@@ -34,6 +37,24 @@ subscriber_manager = SubscriberManager()
 twitter_scraper = TwitterScraper()
 
 
+def md_to_html(text: str) -> str:
+    """Convert markdown bold/italic to HTML and escape bare HTML chars."""
+    # Escape HTML special chars first (but not existing tags)
+    # Replace **bold** with <b>bold</b>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    # Replace *italic* with <i>italic</i>
+    text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
+    return text
+
+
+def escape_html(text: str) -> str:
+    """Escape HTML special characters for safe Telegram HTML."""
+    text = text.replace("&", "&amp;")
+    text = text.replace("<", "&lt;")
+    text = text.replace(">", "&gt;")
+    return text
+
+
 # ──────────────────────────────────────────────
 # Command Handlers
 # ──────────────────────────────────────────────
@@ -41,14 +62,14 @@ twitter_scraper = TwitterScraper()
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    user_name = user.first_name if user else "유저"
+    user_name = escape_html(user.first_name) if user else "유저"
 
     welcome_text = (
         f"안녕하세요 {user_name}님!\n"
-        f"Yellow Korea Bot에 오신 것을 환영합니다!\n\n"
+        f"<b>Yellow Korea Bot</b>에 오신 것을 환영합니다!\n\n"
         f"이 봇은 @Yellow__Korea 트윗을 실시간으로 전달하고,\n"
         f"Yellow Network에 대한 정보를 AI로 제공합니다.\n\n"
-        f"주요 기능:\n"
+        f"<b>주요 기능:</b>\n"
         f"- @Yellow__Korea 트윗 실시간 알림\n"
         f"- Yellow Network 정보 제공 (Claude AI)\n"
         f"- 정기적인 Yellow 팁\n\n"
@@ -69,7 +90,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    await update.message.reply_text(
+        welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+    )
 
     chat_id = update.effective_chat.id
     if subscriber_manager.add(chat_id):
@@ -82,8 +105,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
-        "사용 가능한 명령어:\n\n"
-        "/start - 봇 시작 & 소개\n"
+        "<b>사용 가능한 명령어:</b>\n\n"
+        "/start - 봇 시작 &amp; 소개\n"
         "/about - Yellow Network 소개\n"
         "/links - 공식 링크 모음\n"
         "/subscribe - 트윗 알림 구독\n"
@@ -94,19 +117,19 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "자유롭게 Yellow에 대해 질문해주세요!\n"
         "AI가 친절하게 답변해드립니다."
     )
-    await update.message.reply_text(help_text)
+    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
 
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
-        f"Yellow Network 소개\n\n"
+        f"<b>Yellow Network 소개</b>\n\n"
         f"{YELLOW_INFO['about']}\n\n"
-        f"주요 기능:\n{YELLOW_INFO['features']}\n\n"
-        f"토큰:\n{YELLOW_INFO['token']}\n\n"
-        f"최신 업데이트:\n"
+        f"<b>주요 기능:</b>\n{YELLOW_INFO['features']}\n\n"
+        f"<b>토큰:</b>\n{YELLOW_INFO['token']}\n\n"
+        f"<b>최신 업데이트:</b>\n"
         f"https://x.com/Yellow__Korea"
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -121,7 +144,16 @@ async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(YELLOW_INFO["links"], reply_markup=reply_markup)
+    text = (
+        "<b>공식 채널:</b>\n"
+        "- Twitter/X: https://x.com/Yellow__Korea\n"
+        "- Telegram 공지방: https://t.me/YellowKorea_ann\n"
+        "- Telegram 채팅방: https://t.me/YellowKorea_chat\n"
+        "- Yellow Network: https://www.yellow.org"
+    )
+    await update.message.reply_text(
+        text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+    )
 
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -157,7 +189,9 @@ async def cmd_latest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
         for tweet in tweets[-5:]:
             text = format_tweet_message(tweet)
-            await update.message.reply_text(text, disable_web_page_preview=False)
+            await update.message.reply_text(
+                text, disable_web_page_preview=False, parse_mode=ParseMode.HTML
+            )
     except Exception as e:
         logger.error(f"Error fetching tweets: {e}")
         await update.message.reply_text(
@@ -167,7 +201,8 @@ async def cmd_latest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(get_random_tip())
+    tip = get_random_tip()
+    await update.message.reply_text(tip, parse_mode=ParseMode.HTML)
 
 
 # ──────────────────────────────────────────────
@@ -198,7 +233,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_name = user.first_name if user else ""
 
     response = await chat_handler.get_response(user_message, user_name=user_name)
-    await update.message.reply_text(response)
+    # Convert any remaining markdown bold to HTML
+    response = md_to_html(response)
+
+    try:
+        await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+    except Exception:
+        # Fallback: send without parse mode if HTML is malformed
+        await update.message.reply_text(response)
 
 
 # ──────────────────────────────────────────────
@@ -207,12 +249,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def format_tweet_message(tweet: dict) -> str:
-    preview = tweet["text"]
+    preview = escape_html(tweet["text"])
     if len(preview) > 500:
         preview = preview[:500] + "..."
 
     return (
-        f"@Yellow__Korea 새 트윗\n"
+        f"<b>@Yellow__Korea 새 트윗</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{preview}\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -242,6 +284,7 @@ async def check_and_broadcast_tweets(context: ContextTypes.DEFAULT_TYPE) -> None
                     chat_id=chat_id,
                     text=text,
                     disable_web_page_preview=False,
+                    parse_mode=ParseMode.HTML,
                 )
             except Exception as e:
                 logger.warning(f"Failed to send to {chat_id}: {e}")
@@ -263,7 +306,9 @@ async def send_periodic_tip(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     for chat_id in subscribers:
         try:
-            await context.bot.send_message(chat_id=chat_id, text=tip)
+            await context.bot.send_message(
+                chat_id=chat_id, text=tip, parse_mode=ParseMode.HTML
+            )
         except Exception as e:
             logger.warning(f"Failed to send tip to {chat_id}: {e}")
             if "Forbidden" in str(e) or "blocked" in str(e).lower():
