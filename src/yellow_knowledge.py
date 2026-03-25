@@ -1,18 +1,17 @@
 """
-Yellow Korea knowledge base and AI chat handler.
+Yellow Korea knowledge base and Claude AI chat handler.
 Provides information about Yellow protocol/project to users.
-Includes auto-engagement tips for periodic broadcasting.
 """
 
 import logging
 import random
-from openai import AsyncOpenAI
+import anthropic
 
-from src.config import OPENAI_API_KEY
+from src.config import ANTHROPIC_API_KEY
 
 logger = logging.getLogger(__name__)
 
-# Core knowledge about Yellow (can be extended)
+# Core knowledge about Yellow
 YELLOW_INFO = {
     "about": (
         "Yellow은 크로스체인 거래를 가능하게 하는 탈중앙화 브로커 클리어링 네트워크입니다. "
@@ -34,6 +33,7 @@ YELLOW_INFO = {
         "공식 채널:\n"
         "- Twitter/X: https://x.com/Yellow__Korea\n"
         "- Telegram 공지방: https://t.me/YellowKorea_ann\n"
+        "- Telegram 채팅방: https://t.me/YellowKorea_chat\n"
         "- Yellow Network: https://www.yellow.org"
     ),
     "community": (
@@ -69,10 +69,11 @@ Yellow Network에 대한 정보를 한국어로 친절하게 제공합니다.
 5. 스캠/피싱 링크에 대해 경고하세요.
 6. Yellow Korea 공지방(https://t.me/YellowKorea_ann)과 트위터(https://x.com/Yellow__Korea)를 자주 안내하세요.
 7. 대화 톤은 친근하고 프로페셔널하게 유지하세요.
+8. 답변은 간결하되 핵심 정보를 빠짐없이 전달하세요.
 """.format(**YELLOW_INFO)
 
 
-# Keyword-based responses for when OpenAI is not available
+# Keyword-based responses (fallback when no API key)
 KEYWORD_RESPONSES = {
     ("yellow", "옐로우", "옐로", "뭐", "소개", "무엇", "what"): YELLOW_INFO["about"],
     ("기능", "특징", "feature"): YELLOW_INFO["features"],
@@ -98,15 +99,16 @@ KEYWORD_RESPONSES = {
         "/start - 봇 시작 & 소개\n"
         "/about - Yellow 소개\n"
         "/links - 공식 링크\n"
-        "/subscribe - 공지 알림 구독\n"
-        "/unsubscribe - 공지 알림 해제\n"
-        "/latest - 최근 공지 보기\n\n"
+        "/subscribe - 알림 구독\n"
+        "/unsubscribe - 알림 해제\n"
+        "/latest - 최근 공지/트윗 보기\n"
+        "/tip - Yellow 팁 받기\n\n"
         "또는 자유롭게 Yellow에 대해 질문해주세요!"
     ),
 }
 
 
-# Auto-engagement: periodic tips/facts about Yellow
+# Auto-engagement tips
 YELLOW_TIPS = [
     (
         "Yellow Tip\n\n"
@@ -136,6 +138,7 @@ YELLOW_TIPS = [
         "Yellow Community\n\n"
         "Yellow Korea 커뮤니티에 참여하세요! "
         "함께 Yellow Network의 성장을 만들어갑니다.\n\n"
+        "채팅방: https://t.me/YellowKorea_chat\n"
         "공지방: https://t.me/YellowKorea_ann"
     ),
     (
@@ -159,40 +162,38 @@ def get_random_tip() -> str:
 
 
 class YellowChatHandler:
-    """Handles user chat messages about Yellow."""
+    """Handles user chat messages about Yellow using Claude API."""
 
     def __init__(self):
-        self.openai_client = None
-        if OPENAI_API_KEY:
-            self.openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            logger.info("OpenAI client initialized for AI chat")
+        self.client = None
+        if ANTHROPIC_API_KEY:
+            self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+            logger.info("Anthropic Claude client initialized for AI chat")
         else:
-            logger.info("No OpenAI key. Using keyword-based responses.")
+            logger.info("No Anthropic API key. Using keyword-based responses.")
 
     async def get_response(self, user_message: str, user_name: str = "") -> str:
         """Generate a response to a user message about Yellow."""
-        if self.openai_client:
-            return await self._ai_response(user_message, user_name)
+        if self.client:
+            return await self._claude_response(user_message, user_name)
         return self._keyword_response(user_message)
 
-    async def _ai_response(self, user_message: str, user_name: str = "") -> str:
-        """Generate AI-powered response using OpenAI."""
+    async def _claude_response(self, user_message: str, user_name: str = "") -> str:
+        """Generate AI-powered response using Claude."""
         try:
             user_context = f"[유저: {user_name}] " if user_name else ""
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=500,
+                system=SYSTEM_PROMPT,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"{user_context}{user_message}"},
                 ],
-                max_tokens=500,
-                temperature=0.7,
             )
-            return response.choices[0].message.content or self._keyword_response(
-                user_message
-            )
+            text = response.content[0].text if response.content else None
+            return text or self._keyword_response(user_message)
         except Exception as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error(f"Claude API error: {e}")
             return self._keyword_response(user_message)
 
     def _keyword_response(self, user_message: str) -> str:
