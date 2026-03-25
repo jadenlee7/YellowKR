@@ -1,9 +1,11 @@
 """
 Yellow Korea knowledge base and AI chat handler.
 Provides information about Yellow protocol/project to users.
+Includes auto-engagement tips for periodic broadcasting.
 """
 
 import logging
+import random
 from openai import AsyncOpenAI
 
 from src.config import OPENAI_API_KEY
@@ -66,6 +68,7 @@ Yellow Network에 대한 정보를 한국어로 친절하게 제공합니다.
 4. 한국어로 대화하되, 영어 질문에는 영어로 답변하세요.
 5. 스캠/피싱 링크에 대해 경고하세요.
 6. Yellow Korea 공지방(https://t.me/YellowKorea_ann)과 트위터(https://x.com/Yellow__Korea)를 자주 안내하세요.
+7. 대화 톤은 친근하고 프로페셔널하게 유지하세요.
 """.format(**YELLOW_INFO)
 
 
@@ -87,20 +90,72 @@ KEYWORD_RESPONSES = {
         "투자는 항상 본인의 판단으로 진행해주세요. DYOR!"
     ),
     ("안녕", "하이", "hello", "hi", "반가"): (
-        "안녕하세요! Yellow Korea 봇입니다. "
-        "Yellow에 대해 궁금한 점이 있으시면 편하게 질문해주세요! "
+        "안녕하세요! Yellow Korea 봇입니다.\n"
+        "Yellow에 대해 궁금한 점이 있으시면 편하게 질문해주세요!"
     ),
     ("도움", "help", "명령어", "command"): (
         "사용 가능한 명령어:\n"
         "/start - 봇 시작 & 소개\n"
         "/about - Yellow 소개\n"
         "/links - 공식 링크\n"
-        "/subscribe - 트윗 알림 구독\n"
-        "/unsubscribe - 트윗 알림 해제\n"
-        "/latest - 최근 트윗 보기\n\n"
+        "/subscribe - 공지 알림 구독\n"
+        "/unsubscribe - 공지 알림 해제\n"
+        "/latest - 최근 공지 보기\n\n"
         "또는 자유롭게 Yellow에 대해 질문해주세요!"
     ),
 }
+
+
+# Auto-engagement: periodic tips/facts about Yellow
+YELLOW_TIPS = [
+    (
+        "Yellow Tip\n\n"
+        "Yellow Network의 State Channel 기술은 오프체인에서 거래를 처리하여 "
+        "가스비를 절감하고 속도를 높입니다.\n\n"
+        "자세히: https://t.me/YellowKorea_ann"
+    ),
+    (
+        "알고 계셨나요?\n\n"
+        "Yellow Network는 다양한 거래소와 블록체인을 하나로 연결하여 "
+        "유동성 분산 문제를 해결합니다.\n\n"
+        "공식 채널: https://t.me/YellowKorea_ann"
+    ),
+    (
+        "Yellow 101\n\n"
+        "크로스체인 브로커 클리어링이란? 서로 다른 체인의 자산을 "
+        "중개 없이 안전하게 교환할 수 있는 기술입니다.\n\n"
+        "더 알아보기: https://www.yellow.org"
+    ),
+    (
+        "Yellow Network Update\n\n"
+        "Yellow Korea 공지방에서 최신 업데이트를 확인하세요!\n"
+        "https://t.me/YellowKorea_ann\n\n"
+        "Twitter: https://x.com/Yellow__Korea"
+    ),
+    (
+        "Yellow Community\n\n"
+        "Yellow Korea 커뮤니티에 참여하세요! "
+        "함께 Yellow Network의 성장을 만들어갑니다.\n\n"
+        "공지방: https://t.me/YellowKorea_ann"
+    ),
+    (
+        "Yellow Tip\n\n"
+        "YELLOW 토큰은 네트워크 보안, 스테이킹, 거버넌스에 활용됩니다. "
+        "토큰 홀더는 네트워크 의사결정에 참여할 수 있습니다.\n\n"
+        "DYOR: https://www.yellow.org"
+    ),
+    (
+        "알고 계셨나요?\n\n"
+        "Yellow Network는 기관급 성능을 제공하면서도 "
+        "탈중앙화를 유지합니다. 중앙 서버 없이 P2P로 동작합니다.\n\n"
+        "자세히: https://t.me/YellowKorea_ann"
+    ),
+]
+
+
+def get_random_tip() -> str:
+    """Get a random Yellow tip for auto-engagement."""
+    return random.choice(YELLOW_TIPS)
 
 
 class YellowChatHandler:
@@ -114,20 +169,21 @@ class YellowChatHandler:
         else:
             logger.info("No OpenAI key. Using keyword-based responses.")
 
-    async def get_response(self, user_message: str) -> str:
+    async def get_response(self, user_message: str, user_name: str = "") -> str:
         """Generate a response to a user message about Yellow."""
         if self.openai_client:
-            return await self._ai_response(user_message)
+            return await self._ai_response(user_message, user_name)
         return self._keyword_response(user_message)
 
-    async def _ai_response(self, user_message: str) -> str:
+    async def _ai_response(self, user_message: str, user_name: str = "") -> str:
         """Generate AI-powered response using OpenAI."""
         try:
+            user_context = f"[유저: {user_name}] " if user_name else ""
             response = await self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
+                    {"role": "user", "content": f"{user_context}{user_message}"},
                 ],
                 max_tokens=500,
                 temperature=0.7,

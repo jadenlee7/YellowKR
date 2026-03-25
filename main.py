@@ -2,18 +2,18 @@
 Yellow Korea Bot - Main Entry Point
 
 A Telegram bot that:
-1. Scrapes @Yellow__Korea tweets and broadcasts to subscribers
-2. Provides Yellow Network information
-3. Chats with users about Yellow
-4. References Yellow Korea announcement channel (https://t.me/YellowKorea_ann)
+1. Scrapes @YellowKorea_ann channel posts and broadcasts to subscribers
+2. Provides Yellow Network information via chat
+3. Auto-engages users with periodic Yellow tips
+4. References Yellow Korea announcement channel and @Yellow__Korea Twitter
 """
 
 import logging
 import os
 import sys
 
-from src.config import SCRAPE_INTERVAL_MINUTES, DATA_DIR
-from src.bot import create_bot, check_and_broadcast_tweets
+from src.config import DATA_DIR
+from src.bot import create_bot
 
 # Configure logging
 logging.basicConfig(
@@ -33,25 +33,9 @@ def main():
     # Ensure data directory exists
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    # Create bot application
+    # Create and run bot (jobs are scheduled inside create_bot)
     app = create_bot()
 
-    # Schedule tweet checking job
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeating(
-            check_and_broadcast_tweets,
-            interval=SCRAPE_INTERVAL_MINUTES * 60,
-            first=10,  # First check 10 seconds after start
-            name="tweet_checker",
-        )
-        logger.info(
-            f"Tweet checker scheduled every {SCRAPE_INTERVAL_MINUTES} minutes"
-        )
-    else:
-        logger.warning("Job queue not available. Tweet broadcasting disabled.")
-
-    # Start polling
     logger.info("Bot is running! Press Ctrl+C to stop.")
     app.run_polling(drop_pending_updates=True)
 
