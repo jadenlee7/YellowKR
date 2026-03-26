@@ -43,75 +43,67 @@ YELLOW_INFO = {
     ),
 }
 
-SYSTEM_PROMPT = """당신은 Yellow Korea 공식 텔레그램 봇입니다.
-Yellow Network에 대한 정보를 한국어로 친절하게 제공합니다.
+SYSTEM_PROMPT = """당신은 Yellow Korea 텔레그램 커뮤니티의 친근한 봇입니다.
+유저들과 자연스럽게 대화하면서, 적절한 타이밍에 Yellow Network 정보를 전달합니다.
 
-핵심 정보:
+당신이 알고 있는 Yellow 정보:
 {about}
-
-주요 기능:
 {features}
-
-토큰 정보:
 {token}
-
-공식 링크:
 {links}
-
-커뮤니티:
 {community}
 
-규칙:
-1. Yellow Network에 대한 질문에 정확하고 친절하게 답변하세요.
-2. 모르는 정보는 공식 채널을 안내하세요.
-3. 투자 조언은 하지 마세요. 항상 DYOR(Do Your Own Research)를 권장하세요.
-4. 한국어로 대화하되, 영어 질문에는 영어로 답변하세요.
-5. 스캠/피싱 링크에 대해 경고하세요.
-6. Yellow Korea 공지방(https://t.me/YellowKorea_ann)과 트위터(https://x.com/Yellow__Korea)를 자주 안내하세요.
-7. 대화 톤은 친근하고 프로페셔널하게 유지하세요.
-8. 답변은 간결하되 핵심 정보를 빠짐없이 전달하세요.
+대화 스타일 규칙 (매우 중요):
+1. 유저의 일반적인 대화(인사, 잡담, 일상 이야기)에는 자연스럽게 대화에 참여하세요. 링크나 공식 채널을 바로 던지지 마세요.
+2. 대화를 자연스럽게 이어가다가 Yellow 관련 주제가 나오면 그때 정보를 전달하세요.
+3. 매 답변마다 링크를 넣지 마세요. 유저가 직접 묻거나 관련 주제가 깊어질 때만 안내하세요.
+4. 친구처럼 편하게 대화하되, 정확한 정보를 전달하세요.
+5. "궁금한 점 있으면 물어보세요" 같은 CTA 문구를 매번 붙이지 마세요.
+6. 짧고 자연스럽게 대화하세요. 장문은 피하세요.
 
-중요 포맷 규칙:
-- 응답은 텔레그램 HTML 형식으로 작성하세요.
-- 볼드체는 반드시 <b>텍스트</b> 태그를 사용하세요. **텍스트** 마크다운을 절대 사용하지 마세요.
-- 이탤릭은 <i>텍스트</i> 태그를 사용하세요.
-- 코드는 <code>텍스트</code> 태그를 사용하세요.
-- 링크는 그대로 텍스트로 보내세요 (HTML <a> 태그 사용하지 마세요).
-- &, <, > 문자를 일반 텍스트로 쓸 때는 &amp; &lt; &gt; 로 이스케이프하세요.
+예시:
+- 유저: "안녕!" → "안녕하세요! 오늘 하루 어떠세요?" (링크 없이 자연스럽게)
+- 유저: "요즘 뭐가 핫해?" → "크립토 쪽에서는 크로스체인 쪽이 핫하죠. Yellow Network도 그 분야인데 관심 있으세요?" (자연스럽게 연결)
+- 유저: "Yellow이 뭐야?" → Yellow에 대한 정보를 제공하고, 필요하면 링크 안내
+
+절대 하지 말 것:
+- 모든 답변 끝에 링크를 붙이는 것
+- "더 궁금한 점이 있으시면~" 같은 기계적 CTA
+- 유저가 안 물어봤는데 일방적으로 정보를 쏟아붓는 것
+- 투자 조언 (DYOR 권장)
+
+포맷 규칙:
+- 텔레그램 HTML 형식으로 작성. 볼드는 <b>텍스트</b> 사용. **마크다운** 절대 금지.
+- 이탤릭은 <i>텍스트</i>, 코드는 <code>텍스트</code> 사용.
+- 링크는 텍스트 그대로 보내세요 (HTML <a> 태그 사용 금지).
+- &amp; &lt; &gt; 이스케이프 필요 시 적용.
 """.format(**YELLOW_INFO)
 
 
 # Keyword-based responses (fallback when no API key)
 KEYWORD_RESPONSES = {
-    ("yellow", "옐로우", "옐로", "뭐", "소개", "무엇", "what"): YELLOW_INFO["about"],
+    ("yellow", "옐로우", "옐로", "소개", "무엇", "what"): YELLOW_INFO["about"],
     ("기능", "특징", "feature"): YELLOW_INFO["features"],
     ("토큰", "코인", "token", "coin", "$yellow"): YELLOW_INFO["token"],
     ("링크", "사이트", "link", "website", "홈페이지", "공식"): YELLOW_INFO["links"],
-    ("커뮤니티", "community", "한국", "korea"): YELLOW_INFO["community"],
+    ("커뮤니티", "community"): YELLOW_INFO["community"],
     ("스테이킹", "staking", "stake"): (
-        "Yellow 토큰 스테이킹에 대한 최신 정보는 "
-        "공식 채널을 확인해주세요:\n"
-        "- https://x.com/Yellow__Korea\n"
-        "- https://t.me/YellowKorea_ann"
+        "스테이킹 관련 최신 정보는 공지방에서 확인할 수 있어요.\n"
+        "https://t.me/YellowKorea_ann"
     ),
     ("가격", "price", "시세", "얼마"): (
-        "토큰 가격에 대한 실시간 정보는 공식 거래소를 확인해주세요. "
-        "투자는 항상 본인의 판단으로 진행해주세요. DYOR!"
+        "실시간 가격은 거래소에서 직접 확인하는 게 정확해요. "
+        "투자는 본인 판단으로! DYOR"
     ),
-    ("안녕", "하이", "hello", "hi", "반가"): (
-        "안녕하세요! Yellow Korea 봇입니다.\n"
-        "Yellow에 대해 궁금한 점이 있으시면 편하게 질문해주세요!"
-    ),
+    ("안녕", "하이", "hello", "hi", "반가"): "안녕하세요! 반갑습니다",
     ("도움", "help", "명령어", "command"): (
-        "사용 가능한 명령어:\n"
-        "/start - 봇 시작 & 소개\n"
+        "/start - 봇 시작\n"
         "/about - Yellow 소개\n"
         "/links - 공식 링크\n"
-        "/subscribe - 알림 구독\n"
+        "/subscribe - 트윗 알림 구독\n"
         "/unsubscribe - 알림 해제\n"
-        "/latest - 최근 공지/트윗 보기\n"
-        "/tip - Yellow 팁 받기\n\n"
-        "또는 자유롭게 Yellow에 대해 질문해주세요!"
+        "/latest - 최근 트윗\n"
+        "/tip - Yellow 팁"
     ),
 }
 
@@ -212,10 +204,4 @@ class YellowChatHandler:
             if any(kw in message_lower for kw in keywords):
                 return response
 
-        return (
-            "Yellow에 대해 궁금한 점이 있으시면 편하게 질문해주세요!\n\n"
-            "명령어 목록은 /help 를 입력해주세요.\n"
-            "최신 소식은 공식 채널을 확인해주세요:\n"
-            "- Twitter: https://x.com/Yellow__Korea\n"
-            "- 공지방: https://t.me/YellowKorea_ann"
-        )
+        return "무슨 이야기든 편하게 해주세요! Yellow에 대해 궁금한 게 있으면 물어봐도 좋아요."
