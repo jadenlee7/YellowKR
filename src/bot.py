@@ -1,11 +1,11 @@
 """
 Yellow Korea Telegram Bot.
-Scrapes @Yellow__Korea Twitter + AI chat with users.
-All messages use HTML parse mode for proper bold/italic rendering.
+Scrapes @Yellow__Korea + @yellow Twitter, AI chat, auto-engagement posts.
 """
 
 import logging
 import re
+from datetime import datetime, timezone, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -19,15 +19,26 @@ from telegram.constants import ParseMode
 
 from src.config import (
     TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
     TWITTER_SCRAPE_INTERVAL_MINUTES,
-    AUTO_TIP_INTERVAL_MINUTES,
+    AUTO_POST_INTERVAL_MINUTES,
+    TWITTER_MAIN_USERNAME,
 )
-from src.yellow_knowledge import YellowChatHandler, YELLOW_INFO, get_random_tip
+from src.yellow_knowledge import YellowChatHandler, YELLOW_INFO
 from src.subscribers import SubscriberManager
 from src.twitter_scraper import (
     TwitterScraper,
     get_last_tweet_id,
     save_last_tweet_id,
+)
+from src.auto_post import (
+    is_within_posting_hours,
+    is_yellow_pro_content,
+    get_last_main_tweet_id,
+    save_last_main_tweet_id,
+    get_engagement_post,
+    generate_tweet_discussion,
+    format_yellow_main_tweet,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,20 +46,17 @@ logger = logging.getLogger(__name__)
 chat_handler = YellowChatHandler()
 subscriber_manager = SubscriberManager()
 twitter_scraper = TwitterScraper()
+# Separate scraper for @yellow main account
+yellow_main_scraper = TwitterScraper(username_override=TWITTER_MAIN_USERNAME)
 
 
 def md_to_html(text: str) -> str:
-    """Convert markdown bold/italic to HTML and escape bare HTML chars."""
-    # Escape HTML special chars first (but not existing tags)
-    # Replace **bold** with <b>bold</b>
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    # Replace *italic* with <i>italic</i>
     text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
     return text
 
 
 def escape_html(text: str) -> str:
-    """Escape HTML special characters for safe Telegram HTML."""
     text = text.replace("&", "&amp;")
     text = text.replace("<", "&lt;")
     text = text.replace(">", "&gt;")
@@ -67,12 +75,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome_text = (
         f"안녕하세요 {user_name}님!\n"
         f"<b>Yellow Korea Bot</b>에 오신 것을 환영합니다!\n\n"
-        f"이 봇은 @Yellow__Korea 트윗을 실시간으로 전달하고,\n"
+        f"이 봇은 @Yellow__Korea, @yellow 트윗을 실시간으로 전달하고,\n"
         f"Yellow Network에 대한 정보를 AI로 제공합니다.\n\n"
         f"<b>주요 기능:</b>\n"
-        f"- @Yellow__Korea 트윗 실시간 알림\n"
-        f"- Yellow Network 정보 제공 (Claude AI)\n"
-        f"- 정기적인 Yellow 팁\n\n"
+        f"- @yellow + @Yellow__Korea 트윗 실시간 알림\n"
+        f"- 크립토 뉴스 &amp; 토론 자동 포스팅\n"
+        f"- Yellow Network 정보 제공 (Claude AI)\n\n"
         f"/subscribe 를 눌러 알림을 구독하세요!"
     )
 
@@ -82,8 +90,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("채팅방", url="https://t.me/YellowKorea_chat"),
         ],
         [
-            InlineKeyboardButton("Twitter/X", url="https://x.com/Yellow__Korea"),
-            InlineKeyboardButton("Yellow.org", url="https://www.yellow.org"),
+            InlineKeyboardButton("@yellow", url="https://x.com/yellow"),
+            InlineKeyboardButton("@Yellow__Korea", url="https://x.com/Yellow__Korea"),
         ],
         [
             InlineKeyboardButton("알림 구독하기", callback_data="subscribe"),
@@ -112,7 +120,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/subscribe - 트윗 알림 구독\n"
         "/unsubscribe - 트윗 알림 해제\n"
         "/latest - 최근 트윗 보기\n"
-        "/tip - Yellow 팁 받기\n"
         "/help - 도움말\n\n"
         "자유롭게 Yellow에 대해 질문해주세요!\n"
         "AI가 친절하게 답변해드립니다."
@@ -127,7 +134,7 @@ async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"<b>주요 기능:</b>\n{YELLOW_INFO['features']}\n\n"
         f"<b>토큰:</b>\n{YELLOW_INFO['token']}\n\n"
         f"<b>최신 업데이트:</b>\n"
-        f"https://x.com/Yellow__Korea"
+        f"https://x.com/yellow"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -139,14 +146,18 @@ async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("채팅방", url="https://t.me/YellowKorea_chat"),
         ],
         [
-            InlineKeyboardButton("Twitter/X", url="https://x.com/Yellow__Korea"),
+            InlineKeyboardButton("@yellow", url="https://x.com/yellow"),
+            InlineKeyboardButton("@Yellow__Korea", url="https://x.com/Yellow__Korea"),
+        ],
+        [
             InlineKeyboardButton("Yellow.org", url="https://www.yellow.org"),
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = (
         "<b>공식 채널:</b>\n"
-        "- Twitter/X: https://x.com/Yellow__Korea\n"
+        "- Twitter (Global): https://x.com/yellow\n"
+        "- Twitter (Korea): https://x.com/Yellow__Korea\n"
         "- Telegram 공지방: https://t.me/YellowKorea_ann\n"
         "- Telegram 채팅방: https://t.me/YellowKorea_chat\n"
         "- Yellow Network: https://www.yellow.org"
@@ -161,7 +172,7 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if subscriber_manager.add(chat_id):
         await update.message.reply_text(
             "트윗 알림을 구독했습니다!\n"
-            "@Yellow__Korea 새 트윗이 올라오면 바로 알려드릴게요."
+            "@yellow + @Yellow__Korea 새 트윗이 올라오면 바로 알려드릴게요."
         )
     else:
         await update.message.reply_text("이미 알림을 구독 중입니다!")
@@ -176,33 +187,39 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def cmd_latest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("@Yellow__Korea 최근 트윗을 가져오는 중...")
+    await update.message.reply_text("최근 트윗을 가져오는 중...")
 
+    sent_any = False
+    # @yellow main
     try:
-        tweets = await twitter_scraper.fetch_latest_tweets(limit=5)
-        if not tweets:
-            await update.message.reply_text(
-                "최근 트윗을 가져올 수 없습니다.\n"
-                "직접 확인: https://x.com/Yellow__Korea"
-            )
-            return
+        tweets = await yellow_main_scraper.fetch_latest_tweets(limit=3)
+        for tweet in tweets[-3:]:
+            if not is_yellow_pro_content(tweet["text"]):
+                text = format_yellow_main_tweet(tweet)
+                await update.message.reply_text(
+                    text, disable_web_page_preview=False, parse_mode=ParseMode.HTML
+                )
+                sent_any = True
+    except Exception as e:
+        logger.error(f"Error fetching @yellow tweets: {e}")
 
-        for tweet in tweets[-5:]:
-            text = format_tweet_message(tweet)
+    # @Yellow__Korea
+    try:
+        tweets = await twitter_scraper.fetch_latest_tweets(limit=3)
+        for tweet in tweets[-3:]:
+            text = format_korea_tweet(tweet)
             await update.message.reply_text(
                 text, disable_web_page_preview=False, parse_mode=ParseMode.HTML
             )
+            sent_any = True
     except Exception as e:
-        logger.error(f"Error fetching tweets: {e}")
+        logger.error(f"Error fetching @Yellow__Korea tweets: {e}")
+
+    if not sent_any:
         await update.message.reply_text(
-            "트윗을 가져오는 중 오류가 발생했습니다.\n"
-            "직접 확인: https://x.com/Yellow__Korea"
+            "최근 트윗을 가져올 수 없습니다.\n"
+            "직접 확인: https://x.com/yellow"
         )
-
-
-async def cmd_tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    tip = get_random_tip()
-    await update.message.reply_text(tip, parse_mode=ParseMode.HTML)
 
 
 # ──────────────────────────────────────────────
@@ -233,26 +250,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_name = user.first_name if user else ""
 
     response = await chat_handler.get_response(user_message, user_name=user_name)
-    # Convert any remaining markdown bold to HTML
     response = md_to_html(response)
 
     try:
         await update.message.reply_text(response, parse_mode=ParseMode.HTML)
     except Exception:
-        # Fallback: send without parse mode if HTML is malformed
         await update.message.reply_text(response)
 
 
 # ──────────────────────────────────────────────
-# Tweet Broadcasting
+# Tweet Formatting
 # ──────────────────────────────────────────────
 
 
-def format_tweet_message(tweet: dict) -> str:
+def format_korea_tweet(tweet: dict) -> str:
     preview = escape_html(tweet["text"])
     if len(preview) > 500:
         preview = preview[:500] + "..."
-
     return (
         f"<b>@Yellow__Korea 새 트윗</b>\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -262,55 +276,104 @@ def format_tweet_message(tweet: dict) -> str:
     )
 
 
-async def check_and_broadcast_tweets(context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Checking for new tweets from @Yellow__Korea...")
+# ──────────────────────────────────────────────
+# Scheduled Jobs
+# ──────────────────────────────────────────────
 
+
+async def check_korea_tweets(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check @Yellow__Korea for new tweets."""
+    logger.info("Checking @Yellow__Korea tweets...")
     since_id = get_last_tweet_id()
     tweets = await twitter_scraper.fetch_latest_tweets(since_id=since_id)
 
     if not tweets:
-        logger.info("No new tweets")
+        logger.info("No new @Yellow__Korea tweets")
         return
 
     subscribers = subscriber_manager.get_all()
-    logger.info(f"Found {len(tweets)} new tweets → {len(subscribers)} subscribers")
-
     for tweet in tweets:
-        text = format_tweet_message(tweet)
-
-        for chat_id in subscribers:
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    disable_web_page_preview=False,
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to send to {chat_id}: {e}")
-                if "Forbidden" in str(e) or "blocked" in str(e).lower():
-                    subscriber_manager.remove(chat_id)
-
+        text = format_korea_tweet(tweet)
+        await _broadcast(context, subscribers, text)
         save_last_tweet_id(tweet["id"])
 
-    logger.info("Tweet broadcast complete")
 
+async def check_yellow_main_tweets(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check @yellow for new tweets (filter out Yellow Pro)."""
+    logger.info("Checking @yellow main tweets...")
+    since_id = get_last_main_tweet_id()
+    tweets = await yellow_main_scraper.fetch_latest_tweets(since_id=since_id)
 
-async def send_periodic_tip(context: ContextTypes.DEFAULT_TYPE) -> None:
-    subscribers = subscriber_manager.get_all()
-    if not subscribers:
+    if not tweets:
+        logger.info("No new @yellow tweets")
         return
 
-    tip = get_random_tip()
-    logger.info(f"Sending periodic tip → {len(subscribers)} subscribers")
+    chat_id = TELEGRAM_CHAT_ID
+    for tweet in tweets:
+        # Filter Yellow Pro
+        if is_yellow_pro_content(tweet["text"]):
+            logger.info(f"Filtered Yellow Pro tweet: {tweet['id']}")
+            save_last_main_tweet_id(tweet["id"])
+            continue
 
+        # Post to chat group with discussion prompt
+        discussion = await generate_tweet_discussion(tweet["text"])
+        if discussion:
+            msg = (
+                f"<b>@yellow 새 소식</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"{escape_html(tweet['text'][:400])}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"🔗 {tweet['url']}\n\n"
+                f"{discussion}"
+            )
+        else:
+            msg = format_yellow_main_tweet(tweet)
+
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id, text=msg,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to post @yellow tweet to chat: {e}")
+
+        # Also broadcast to subscribers
+        subscribers = subscriber_manager.get_all()
+        simple_msg = format_yellow_main_tweet(tweet)
+        await _broadcast(context, subscribers, simple_msg)
+
+        save_last_main_tweet_id(tweet["id"])
+
+
+async def auto_engagement_post(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Post engagement content to chat group every 30 min (8AM-11PM KST)."""
+    if not is_within_posting_hours():
+        logger.info("Outside posting hours (8AM-11PM KST), skipping auto-post")
+        return
+
+    chat_id = TELEGRAM_CHAT_ID
+    post = get_engagement_post()
+
+    logger.info(f"Sending auto engagement post to {chat_id}")
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id, text=post,
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send engagement post: {e}")
+
+
+async def _broadcast(context: ContextTypes.DEFAULT_TYPE, subscribers: set[int], text: str) -> None:
     for chat_id in subscribers:
         try:
             await context.bot.send_message(
-                chat_id=chat_id, text=tip, parse_mode=ParseMode.HTML
+                chat_id=chat_id, text=text,
+                disable_web_page_preview=False, parse_mode=ParseMode.HTML,
             )
         except Exception as e:
-            logger.warning(f"Failed to send tip to {chat_id}: {e}")
+            logger.warning(f"Failed to send to {chat_id}: {e}")
             if "Forbidden" in str(e) or "blocked" in str(e).lower():
                 subscriber_manager.remove(chat_id)
 
@@ -333,26 +396,36 @@ def create_bot() -> Application:
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
     app.add_handler(CommandHandler("latest", cmd_latest))
-    app.add_handler(CommandHandler("tip", cmd_tip))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     job_queue = app.job_queue
     if job_queue:
+        # @Yellow__Korea tweet checker
         job_queue.run_repeating(
-            check_and_broadcast_tweets,
+            check_korea_tweets,
             interval=TWITTER_SCRAPE_INTERVAL_MINUTES * 60,
             first=15,
-            name="tweet_checker",
+            name="korea_tweet_checker",
         )
-        logger.info(f"Tweet checker: every {TWITTER_SCRAPE_INTERVAL_MINUTES} min")
+        logger.info(f"@Yellow__Korea checker: every {TWITTER_SCRAPE_INTERVAL_MINUTES} min")
 
+        # @yellow main tweet checker
         job_queue.run_repeating(
-            send_periodic_tip,
-            interval=AUTO_TIP_INTERVAL_MINUTES * 60,
-            first=AUTO_TIP_INTERVAL_MINUTES * 60,
-            name="auto_tip",
+            check_yellow_main_tweets,
+            interval=TWITTER_SCRAPE_INTERVAL_MINUTES * 60,
+            first=30,
+            name="yellow_main_tweet_checker",
         )
-        logger.info(f"Auto-tip: every {AUTO_TIP_INTERVAL_MINUTES} min")
+        logger.info(f"@yellow checker: every {TWITTER_SCRAPE_INTERVAL_MINUTES} min")
+
+        # Auto engagement post (30 min, 8AM-11PM KST)
+        job_queue.run_repeating(
+            auto_engagement_post,
+            interval=AUTO_POST_INTERVAL_MINUTES * 60,
+            first=60,  # First post after 1 min
+            name="auto_engagement",
+        )
+        logger.info(f"Auto engagement: every {AUTO_POST_INTERVAL_MINUTES} min (8AM-11PM KST)")
 
     return app

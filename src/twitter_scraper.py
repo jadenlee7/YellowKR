@@ -47,10 +47,10 @@ def save_last_tweet_id(tweet_id: str) -> None:
 
 
 class TwitterScraper:
-    """Scrapes tweets from @Yellow__Korea. Uses Twitter API v2 if available."""
+    """Scrapes tweets from a Twitter account. Uses Twitter API v2 if available."""
 
-    def __init__(self):
-        self.username = TWITTER_USERNAME
+    def __init__(self, username_override: str | None = None):
+        self.username = username_override or TWITTER_USERNAME
         self._user_id: str | None = None
 
     async def fetch_latest_tweets(self, since_id: str | None = None, limit: int = 10) -> list[dict]:
