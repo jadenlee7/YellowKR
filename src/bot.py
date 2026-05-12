@@ -40,6 +40,7 @@ from src.auto_post import (
     generate_tweet_discussion,
     format_yellow_main_tweet,
 )
+from src.spam_filter import should_ignore as should_ignore_message
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
+        return
+
+    if should_ignore_message(update.message):
         return
 
     user_message = update.message.text
