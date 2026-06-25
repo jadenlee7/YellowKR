@@ -191,7 +191,7 @@ async def generate_daily_insight(summary_text: str) -> str | None:
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         response = await client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=400,
             system=(
                 "당신은 Yellow Korea 커뮤니티 매니저의 어시스턴트입니다. "
@@ -232,7 +232,7 @@ class YellowChatHandler:
         try:
             user_context = f"[유저: {user_name}] " if user_name else ""
             response = await self.client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=500,
                 system=SYSTEM_PROMPT,
                 messages=[
