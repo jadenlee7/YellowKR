@@ -77,6 +77,7 @@ class StatsManager:
                 "messages": 0,
                 "spam_removed": 0,
                 "new_members": 0,
+                "faq_hits": 0,
                 "active_users": {},   # user_id -> count
                 "questions": [],
                 "keywords": {},       # word -> count
@@ -138,6 +139,11 @@ class StatsManager:
 
     def record_new_member(self, count: int = 1) -> None:
         self._day()["new_members"] += count
+        self._save()
+
+    def record_faq_hit(self, count: int = 1) -> None:
+        """A question was answered from the canned FAQ (saved a Claude call)."""
+        self._day()["faq_hits"] = self._day().get("faq_hits", 0) + count
         self._save()
 
     @staticmethod
@@ -239,7 +245,55 @@ class StatsManager:
             "active_users": len(day.get("active_users", {})),
             "new_members": day.get("new_members", 0),
             "spam_removed": day.get("spam_removed", 0),
+            "faq_hits": day.get("faq_hits", 0),
             "leaderboard": self.get_leaderboard(date_str),
             "keywords": self.top_keywords(date_str),
             "questions": self.get_questions(date_str),
+        }
+
+    def week_summary(self, end_date: str | None = None) -> dict:
+        """Aggregate the 7 days ending on end_date (default: yesterday)."""
+        if end_date:
+            end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=KST)
+        else:
+            end = datetime.now(KST) - timedelta(days=1)
+        dates = [(end - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+        daily = self.data.get("daily", {})
+        users = self.data.get("users", {})
+
+        totals = {"messages": 0, "new_members": 0, "spam_removed": 0, "faq_hits": 0}
+        active_union: set[str] = set()
+        user_counts: Counter = Counter()
+        keyword_counts: Counter = Counter()
+        trend = []  # (date, messages)
+
+        for d in dates:
+            day = daily.get(d, {})
+            totals["messages"] += day.get("messages", 0)
+            totals["new_members"] += day.get("new_members", 0)
+            totals["spam_removed"] += day.get("spam_removed", 0)
+            totals["faq_hits"] += day.get("faq_hits", 0)
+            au = day.get("active_users", {})
+            active_union.update(au.keys())
+            user_counts.update(au)
+            keyword_counts.update(day.get("keywords", {}))
+            trend.append((d, day.get("messages", 0)))
+
+        def label(uid: str) -> str:
+            u = users.get(uid, {})
+            return u.get("username") and f"@{u['username']}" or u.get("name") or f"user{uid[-4:]}"
+
+        leaderboard = [(label(uid), c) for uid, c in user_counts.most_common(10)]
+
+        return {
+            "start": dates[0],
+            "end": dates[-1],
+            "messages": totals["messages"],
+            "active_users": len(active_union),
+            "new_members": totals["new_members"],
+            "spam_removed": totals["spam_removed"],
+            "faq_hits": totals["faq_hits"],
+            "trend": trend,
+            "leaderboard": leaderboard,
+            "keywords": keyword_counts.most_common(8),
         }

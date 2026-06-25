@@ -45,6 +45,18 @@ SPAM_MUTE_MINUTES = int(os.getenv("SPAM_MUTE_MINUTES", "60"))
 # Hour (KST, 0-23) to DM the owner the daily summary.
 DAILY_REPORT_HOUR_KST = int(os.getenv("DAILY_REPORT_HOUR_KST", "9"))
 
+# ── Weekly report ──
+# Owner gets a 7-day trend DM every Monday at DAILY_REPORT_HOUR_KST.
+WEEKLY_REPORT_ENABLED = os.getenv("WEEKLY_REPORT_ENABLED", "true").lower() == "true"
+
+# ── New-member captcha (button-click verification) ──
+# Mutes new members until they tap a verify button; blocks mass bot joins.
+CAPTCHA_ENABLED = os.getenv("CAPTCHA_ENABLED", "true").lower() == "true"
+# Seconds a new member has to verify before the fail action triggers.
+CAPTCHA_TIMEOUT_SECONDS = int(os.getenv("CAPTCHA_TIMEOUT_SECONDS", "120"))
+# What to do if they don't verify in time: "kick" (remove, can rejoin) or "mute".
+CAPTCHA_FAIL_ACTION = os.getenv("CAPTCHA_FAIL_ACTION", "kick").lower()
+
 # ── Data paths ──
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 LAST_TWEET_FILE = os.path.join(DATA_DIR, "last_tweet_id.txt")
