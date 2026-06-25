@@ -549,8 +549,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat = update.effective_chat
     user = update.effective_user
 
-    # Private chat: always respond (AI chat). Owner commands handled separately.
+    # Private chat: only reply to Yellow-related messages (commands handled
+    # separately). Replying to everything just clutters the conversation.
     if chat.type == "private":
+        if not is_yellow_related(msg.text):
+            return
         response = md_to_html(await chat_handler.get_response(
             msg.text, user_name=user.first_name if user else ""
         ))
