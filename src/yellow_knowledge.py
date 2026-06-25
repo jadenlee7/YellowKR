@@ -161,6 +161,55 @@ def get_random_tip() -> str:
     return random.choice(YELLOW_TIPS)
 
 
+# Keywords that mark a message as "Yellow-related" so the bot knows when to
+# chime in. Kept broad enough to cover the project + adjacent crypto topics it
+# can usefully answer, but narrow enough to ignore pure off-topic chatter.
+YELLOW_KEYWORDS = (
+    "yellow", "옐로우", "옐로", "$yellow", "yellow network", "옐로우 네트워크",
+    "state channel", "스테이트 채널", "스테이트채널", "브로커", "clearing",
+    "클리어링", "크로스체인", "cross-chain", "crosschain", "토큰", "token",
+    "스테이킹", "staking", "거버넌스", "governance", "에어드랍", "에어드롭",
+    "airdrop", "테스트넷", "testnet", "메인넷", "mainnet", "로드맵", "roadmap",
+    "상장", "listing", "거래소", "exchange", "백서", "whitepaper", "yellow.org",
+)
+
+
+def is_yellow_related(text: str) -> bool:
+    """True if a message is about Yellow (or closely adjacent) and worth a reply."""
+    if not text:
+        return False
+    low = text.lower()
+    return any(kw in low for kw in YELLOW_KEYWORDS)
+
+
+async def generate_daily_insight(summary_text: str) -> str | None:
+    """Use Claude to read the day's chat summary and suggest the single best
+    info message to share next (the "더 나은 메시지 제공" part). Returns None if
+    no API key or on failure."""
+    if not ANTHROPIC_API_KEY:
+        return None
+    try:
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        response = await client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=400,
+            system=(
+                "당신은 Yellow Korea 커뮤니티 매니저의 어시스턴트입니다. "
+                "오늘 채팅방 활동 요약(자주 나온 키워드, 유저 질문)을 보고, "
+                "운영자에게 두 가지를 한국어로 간결하게 제안하세요:\n"
+                "1) 커뮤니티 분위기/관심사 한 줄 요약\n"
+                "2) 다음에 채팅방에 올리면 좋을 '정보 제공 메시지' 초안 1개 "
+                "(자연스럽고 짧게, 광고 느낌 없이). 사람들이 궁금해한 점에 답하는 내용이면 좋습니다.\n"
+                "평문으로 작성하고 마크다운 기호(**)는 쓰지 마세요."
+            ),
+            messages=[{"role": "user", "content": summary_text}],
+        )
+        return response.content[0].text if response.content else None
+    except Exception as e:
+        logger.warning(f"Failed to generate daily insight: {e}")
+        return None
+
+
 class YellowChatHandler:
     """Handles user chat messages about Yellow using Claude API."""
 
