@@ -5,8 +5,14 @@ Scrapes @Yellow__Korea + @yellow Twitter, AI chat, auto-engagement posts.
 
 import logging
 import re
-from datetime import datetime, timezone, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import time
+from datetime import datetime, time as dtime, timezone, timedelta
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ChatPermissions,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -20,12 +26,31 @@ from telegram.constants import ParseMode
 from src.config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
+    OWNER_TELEGRAM_ID,
     TWITTER_SCRAPE_INTERVAL_MINUTES,
     AUTO_POST_INTERVAL_MINUTES,
+    MIN_HUMAN_MSGS_BEFORE_POST,
+    MAX_AUTO_POSTS_PER_DAY,
+    SPAM_ACTION,
+    SPAM_MUTE_THRESHOLD,
+    SPAM_MUTE_MINUTES,
+    DAILY_REPORT_HOUR_KST,
     TWITTER_MAIN_USERNAME,
 )
-from src.yellow_knowledge import YellowChatHandler, YELLOW_INFO
+from src.yellow_knowledge import (
+    YellowChatHandler,
+    YELLOW_INFO,
+    is_yellow_related,
+    generate_daily_insight,
+)
 from src.subscribers import SubscriberManager
+from src.stats import StatsManager, KST
+from src.moderation import (
+    check_message as spam_check,
+    is_suspicious_name,
+    FloodTracker,
+    WarningTracker,
+)
 from src.twitter_scraper import (
     TwitterScraper,
     get_last_tweet_id,
@@ -45,9 +70,18 @@ logger = logging.getLogger(__name__)
 
 chat_handler = YellowChatHandler()
 subscriber_manager = SubscriberManager()
+stats_manager = StatsManager()
+flood_tracker = FloodTracker()
+warning_tracker = WarningTracker()
 twitter_scraper = TwitterScraper()
 # Separate scraper for @yellow main account
 yellow_main_scraper = TwitterScraper(username_override=TWITTER_MAIN_USERNAME)
+
+# Cached numeric chat id for the main group (resolved from TELEGRAM_CHAT_ID).
+_main_chat_id: int | None = None
+# Cached per-chat admin id sets: chat_id -> (fetched_at_monotonic, {user_ids}).
+_admin_cache: dict[int, tuple[float, set[int]]] = {}
+ADMIN_CACHE_TTL = 600  # seconds
 
 
 def md_to_html(text: str) -> str:
@@ -61,6 +95,66 @@ def escape_html(text: str) -> str:
     text = text.replace("<", "&lt;")
     text = text.replace(">", "&gt;")
     return text
+
+
+# ──────────────────────────────────────────────
+# Helpers: ownership, admin status, temp messages
+# ──────────────────────────────────────────────
+
+
+def _is_owner(user_id: int) -> bool:
+    return bool(OWNER_TELEGRAM_ID) and str(user_id) == str(OWNER_TELEGRAM_ID)
+
+
+async def _resolve_main_chat_id(context: ContextTypes.DEFAULT_TYPE):
+    """Resolve TELEGRAM_CHAT_ID (which may be an @username) to a numeric id once."""
+    global _main_chat_id
+    if _main_chat_id is not None:
+        return _main_chat_id
+    try:
+        chat = await context.bot.get_chat(TELEGRAM_CHAT_ID)
+        _main_chat_id = chat.id
+    except Exception as e:
+        logger.warning(f"Could not resolve main chat id from {TELEGRAM_CHAT_ID}: {e}")
+    return _main_chat_id
+
+
+async def _is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
+    """Whether user is an admin/creator of the chat (cached, with TTL)."""
+    now = time.monotonic()
+    cached = _admin_cache.get(chat_id)
+    if cached and now - cached[0] <= ADMIN_CACHE_TTL:
+        return user_id in cached[1]
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id)
+        ids = {a.user.id for a in admins}
+        _admin_cache[chat_id] = (now, ids)
+        return user_id in ids
+    except Exception as e:
+        logger.warning(f"Could not fetch admins for {chat_id}: {e}")
+        return user_id in cached[1] if cached else False
+
+
+async def _delete_msg_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    d = context.job.data
+    try:
+        await context.bot.delete_message(d["chat_id"], d["message_id"])
+    except Exception:
+        pass
+
+
+async def _send_temp(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str,
+                     delete_after: int = 30) -> None:
+    """Send a short notice and auto-delete it to keep the room clean."""
+    try:
+        sent = await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
+    except Exception:
+        return
+    if context.job_queue:
+        context.job_queue.run_once(
+            _delete_msg_job, delete_after,
+            data={"chat_id": chat_id, "message_id": sent.message_id},
+        )
 
 
 # ──────────────────────────────────────────────
@@ -120,10 +214,19 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/subscribe - 트윗 알림 구독\n"
         "/unsubscribe - 트윗 알림 해제\n"
         "/latest - 최근 트윗 보기\n"
+        "/top - 활동 리더보드 (오늘)\n"
         "/help - 도움말\n\n"
-        "자유롭게 Yellow에 대해 질문해주세요!\n"
-        "AI가 친절하게 답변해드립니다."
+        "Yellow 관련 질문에 AI가 답변해드립니다!"
     )
+    # Owner-only commands shown privately to the owner.
+    user = update.effective_user
+    if user and _is_owner(user.id):
+        help_text += (
+            "\n\n<b>운영자 전용:</b>\n"
+            "/report - 오늘 활동 요약 DM 받기\n"
+            "/stats - 오늘 통계 보기\n"
+            "/myid - 내 텔레그램 ID 확인"
+        )
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
 
@@ -223,6 +326,126 @@ async def cmd_latest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 # ──────────────────────────────────────────────
+# Stats / Leaderboard / Owner Commands
+# ──────────────────────────────────────────────
+
+
+def _format_leaderboard(rows: list[tuple[str, int]]) -> str:
+    if not rows:
+        return "아직 집계된 활동이 없어요."
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (label, count) in enumerate(rows):
+        prefix = medals[i] if i < 3 else f"{i + 1}."
+        lines.append(f"{prefix} {escape_html(label)} — {count}")
+    return "\n".join(lines)
+
+
+def build_report_text(summary: dict, insight: str | None = None) -> str:
+    lines = [
+        "<b>📊 Yellow Korea 데일리 리포트</b>",
+        f"📅 {summary['date']}",
+        "",
+        f"💬 총 메시지: <b>{summary['messages']}</b>",
+        f"👥 활성 유저: <b>{summary['active_users']}</b>명",
+        f"🆕 신규 입장: <b>{summary['new_members']}</b>명",
+        f"🛡️ 스팸 차단: <b>{summary['spam_removed']}</b>건",
+        "",
+    ]
+    if summary["leaderboard"]:
+        lines.append("<b>🏆 활동 리더보드</b>")
+        lines.append(_format_leaderboard(summary["leaderboard"]))
+        lines.append("")
+    if summary["keywords"]:
+        kw = ", ".join(f"{escape_html(w)}({c})" for w, c in summary["keywords"])
+        lines.append("<b>🔥 화제 키워드</b>")
+        lines.append(kw)
+        lines.append("")
+    if summary["questions"]:
+        lines.append("<b>❓ 유저 질문</b>")
+        for q in summary["questions"][:5]:
+            lines.append(f"• {escape_html(q[:120])}")
+        lines.append("")
+    if insight:
+        lines.append("<b>🤖 인사이트 &amp; 추천 메시지</b>")
+        lines.append(escape_html(insight))
+    return "\n".join(lines)
+
+
+async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    rows = stats_manager.get_leaderboard(n=10)
+    text = (
+        "<b>🏆 오늘의 활동 리더보드</b>\n\n"
+        f"{_format_leaderboard(rows)}\n\n"
+        "<i>가장 활발하게 대화에 참여한 멤버들이에요!</i>"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    uid = user.id if user else "?"
+    text = (
+        f"당신의 텔레그램 ID: <code>{uid}</code>\n\n"
+        f"데일리 리포트를 받으려면 이 값을 "
+        f"<code>OWNER_TELEGRAM_ID</code> 환경 변수로 설정하세요."
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not _is_owner(user.id):
+        return  # owner-only, silently ignored for others
+    summary = stats_manager.day_summary()
+    await update.message.reply_text(build_report_text(summary), parse_mode=ParseMode.HTML)
+
+
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not _is_owner(user.id):
+        return  # owner-only
+    await update.message.reply_text("오늘 활동 요약을 생성 중...")
+    summary = stats_manager.day_summary()
+    insight = await _build_insight(summary)
+    await update.message.reply_text(
+        build_report_text(summary, insight), parse_mode=ParseMode.HTML
+    )
+
+
+async def _build_insight(summary: dict) -> str | None:
+    """Ask Claude for a one-line read + a suggested next info message."""
+    if not summary["keywords"] and not summary["questions"]:
+        return None
+    kw = ", ".join(w for w, _ in summary["keywords"])
+    questions = "\n".join(f"- {q}" for q in summary["questions"][:10])
+    summary_text = (
+        f"오늘 자주 나온 키워드: {kw or '없음'}\n"
+        f"유저들이 한 질문:\n{questions or '없음'}\n"
+        f"총 메시지 {summary['messages']}개, 활성 유저 {summary['active_users']}명."
+    )
+    return await generate_daily_insight(summary_text)
+
+
+async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Scheduled job: DM the owner yesterday's activity summary."""
+    if not OWNER_TELEGRAM_ID:
+        logger.warning("OWNER_TELEGRAM_ID not set; skipping daily report DM.")
+        return
+    yesterday = (datetime.now(KST) - timedelta(days=1)).strftime("%Y-%m-%d")
+    summary = stats_manager.day_summary(yesterday)
+    insight = await _build_insight(summary)
+    text = build_report_text(summary, insight)
+    try:
+        await context.bot.send_message(
+            chat_id=int(OWNER_TELEGRAM_ID), text=text, parse_mode=ParseMode.HTML
+        )
+        logger.info("Sent daily report to owner.")
+    except Exception as e:
+        logger.warning(f"Failed to send daily report DM: {e}")
+
+
+# ──────────────────────────────────────────────
 # Callback / Message Handlers
 # ──────────────────────────────────────────────
 
@@ -241,21 +464,133 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.answer("이미 구독 중입니다!", show_alert=True)
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text:
-        return
+def _should_reply(msg, text: str, bot_id: int, bot_username: str | None) -> bool:
+    """In a group, the bot only chimes in when the message is Yellow-related,
+    mentions the bot, or replies to the bot. Avoids replying to everything."""
+    reply_to = msg.reply_to_message
+    if reply_to and reply_to.from_user and reply_to.from_user.id == bot_id:
+        return True
+    if bot_username and f"@{bot_username}".lower() in text.lower():
+        return True
+    return is_yellow_related(text)
 
-    user_message = update.message.text
+
+async def _handle_spam(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                       reason: str) -> None:
+    """Delete spam, warn, and mute repeat offenders (per SPAM_ACTION)."""
+    msg = update.message
+    chat = update.effective_chat
     user = update.effective_user
-    user_name = user.first_name if user else ""
 
-    response = await chat_handler.get_response(user_message, user_name=user_name)
-    response = md_to_html(response)
+    stats_manager.record_spam_removed()
+    logger.info(f"Spam from {user.id} in {chat.id}: {reason}")
+
+    if SPAM_ACTION != "delete":
+        return  # "report" mode: counted in stats only, message left in place
 
     try:
-        await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+        await context.bot.delete_message(chat.id, msg.message_id)
+    except Exception as e:
+        logger.warning(f"Could not delete spam (bot needs admin + delete rights): {e}")
+
+    count = warning_tracker.add(user.id)
+    name = escape_html(user.first_name or "유저")
+
+    if count >= SPAM_MUTE_THRESHOLD:
+        try:
+            until = datetime.now(timezone.utc) + timedelta(minutes=SPAM_MUTE_MINUTES)
+            await context.bot.restrict_chat_member(
+                chat.id, user.id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=until,
+            )
+            await _send_temp(
+                context, chat.id,
+                f"🔇 {name}님 반복적인 스팸/홍보로 {SPAM_MUTE_MINUTES}분간 발언이 제한됩니다.",
+                delete_after=60,
+            )
+            return
+        except Exception as e:
+            logger.warning(f"Could not mute {user.id} (bot needs restrict rights): {e}")
+
+    await _send_temp(
+        context, chat.id,
+        f"⚠️ {name}님, 스팸/홍보성 메시지로 판단되어 삭제했어요. 반복 시 발언이 제한됩니다.",
+        delete_after=30,
+    )
+
+
+async def handle_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Count joins and screen obvious impersonator/spam display names."""
+    msg = update.message
+    if not msg or not msg.new_chat_members:
+        return
+    for member in msg.new_chat_members:
+        if member.is_bot:
+            continue
+        stats_manager.record_new_member()
+        # Light screen: an impersonator-style name gets a heads-up, not a ban.
+        name = member.first_name or ""
+        if is_suspicious_name(name):
+            logger.info(f"Suspicious new member name (possible impersonator): {name}")
+    # Single, low-key welcome (auto-deletes so it doesn't clutter).
+    await _send_temp(
+        context, update.effective_chat.id,
+        "👋 Yellow Korea에 오신 걸 환영합니다! 궁금한 건 편하게 물어보세요.",
+        delete_after=120,
+    )
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg or not msg.text:
+        return
+
+    chat = update.effective_chat
+    user = update.effective_user
+
+    # Private chat: always respond (AI chat). Owner commands handled separately.
+    if chat.type == "private":
+        response = md_to_html(await chat_handler.get_response(
+            msg.text, user_name=user.first_name if user else ""
+        ))
+        try:
+            await msg.reply_text(response, parse_mode=ParseMode.HTML)
+        except Exception:
+            await msg.reply_text(response)
+        return
+
+    # Group/supergroup. Ignore anonymous admins / channel posts / other bots.
+    if user is None or user.is_bot:
+        return
+
+    text = msg.text
+    is_admin = await _is_admin(context, chat.id, user.id)
+
+    # 1. Anti-spam (admins exempt).
+    if SPAM_ACTION != "off" and not is_admin and not _is_owner(user.id):
+        flood_reason = flood_tracker.check(user.id, text)
+        if flood_reason:
+            await _handle_spam(update, context, flood_reason)
+            return
+        user_total = stats_manager.data.get("users", {}).get(str(user.id), {}).get("total", 0)
+        verdict = spam_check(text, display_name=user.first_name or "", user_msg_count=user_total)
+        if verdict.is_spam:
+            await _handle_spam(update, context, "; ".join(verdict.reasons))
+            return
+
+    # 2. Record activity for leaderboard / stats / post gating.
+    stats_manager.record_message(chat.id, user, text)
+
+    # 3. Reply only to Yellow-related messages (or mentions / replies to bot).
+    if not _should_reply(msg, text, context.bot.id, context.bot.username):
+        return
+
+    response = md_to_html(await chat_handler.get_response(text, user_name=user.first_name or ""))
+    try:
+        await msg.reply_text(response, parse_mode=ParseMode.HTML)
     except Exception:
-        await update.message.reply_text(response)
+        await msg.reply_text(response)
 
 
 # ──────────────────────────────────────────────
@@ -308,7 +643,7 @@ async def check_yellow_main_tweets(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("No new @yellow tweets")
         return
 
-    chat_id = TELEGRAM_CHAT_ID
+    chat_id = await _resolve_main_chat_id(context) or TELEGRAM_CHAT_ID
     for tweet in tweets:
         # Filter Yellow Pro
         if is_yellow_pro_content(tweet["text"]):
@@ -335,6 +670,10 @@ async def check_yellow_main_tweets(context: ContextTypes.DEFAULT_TYPE) -> None:
                 chat_id=chat_id, text=msg,
                 parse_mode=ParseMode.HTML, disable_web_page_preview=False,
             )
+            # Event-driven bot post: reset the gating counter so an auto-post
+            # won't immediately stack on top of this one.
+            if isinstance(chat_id, int):
+                stats_manager.note_bot_message(chat_id)
         except Exception as e:
             logger.warning(f"Failed to post @yellow tweet to chat: {e}")
 
@@ -347,20 +686,31 @@ async def check_yellow_main_tweets(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def auto_engagement_post(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Post engagement content to chat group every 30 min (8AM-11PM KST)."""
+    """Occasionally post engagement content, but only when the room has been
+    active and the bot wasn't the last to speak (no talking to itself)."""
     if not is_within_posting_hours():
         logger.info("Outside posting hours (8AM-11PM KST), skipping auto-post")
         return
 
-    chat_id = TELEGRAM_CHAT_ID
-    post = get_engagement_post()
+    chat_id = await _resolve_main_chat_id(context)
+    if chat_id is None:
+        logger.warning("Main chat id unresolved; skipping auto-post")
+        return
 
+    if not stats_manager.should_auto_post(
+        chat_id, MIN_HUMAN_MSGS_BEFORE_POST, MAX_AUTO_POSTS_PER_DAY
+    ):
+        logger.info("Auto-post gated: chat quiet or daily cap reached.")
+        return
+
+    post = get_engagement_post()
     logger.info(f"Sending auto engagement post to {chat_id}")
     try:
         await context.bot.send_message(
             chat_id=chat_id, text=post,
             parse_mode=ParseMode.HTML, disable_web_page_preview=True,
         )
+        stats_manager.record_auto_post(chat_id)
     except Exception as e:
         logger.warning(f"Failed to send engagement post: {e}")
 
@@ -396,7 +746,14 @@ def create_bot() -> Application:
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
     app.add_handler(CommandHandler("latest", cmd_latest))
+    app.add_handler(CommandHandler("top", cmd_top))
+    app.add_handler(CommandHandler("myid", cmd_myid))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(
+        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members)
+    )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     job_queue = app.job_queue
@@ -419,13 +776,24 @@ def create_bot() -> Application:
         )
         logger.info(f"@yellow checker: every {TWITTER_SCRAPE_INTERVAL_MINUTES} min")
 
-        # Auto engagement post (30 min, 8AM-11PM KST)
+        # Auto engagement post (gated: only when chat is active, capped per day)
         job_queue.run_repeating(
             auto_engagement_post,
             interval=AUTO_POST_INTERVAL_MINUTES * 60,
-            first=60,  # First post after 1 min
+            first=300,  # First check after 5 min
             name="auto_engagement",
         )
-        logger.info(f"Auto engagement: every {AUTO_POST_INTERVAL_MINUTES} min (8AM-11PM KST)")
+        logger.info(
+            f"Auto engagement: check every {AUTO_POST_INTERVAL_MINUTES} min, "
+            f"max {MAX_AUTO_POSTS_PER_DAY}/day, needs {MIN_HUMAN_MSGS_BEFORE_POST} human msgs"
+        )
+
+        # Daily owner report DM (default 9AM KST)
+        job_queue.run_daily(
+            send_daily_report,
+            time=dtime(hour=DAILY_REPORT_HOUR_KST, minute=0, tzinfo=KST),
+            name="daily_report",
+        )
+        logger.info(f"Daily report: {DAILY_REPORT_HOUR_KST}:00 KST -> owner DM")
 
     return app
