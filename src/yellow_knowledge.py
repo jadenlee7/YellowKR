@@ -77,6 +77,7 @@ SYSTEM_PROMPT = """당신은 Yellow Korea 텔레그램 커뮤니티의 친근한
 - 이탤릭은 <i>텍스트</i>, 코드는 <code>텍스트</code> 사용.
 - 링크는 텍스트 그대로 보내세요 (HTML <a> 태그 사용 금지).
 - &amp; &lt; &gt; 이스케이프 필요 시 적용.
+- 사고 과정이나 추론 단계를 노출하지 말고, 사용자에게 보낼 최종 답변만 작성하세요.
 """.format(**YELLOW_INFO)
 
 
@@ -191,7 +192,7 @@ async def generate_daily_insight(summary_text: str) -> str | None:
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         response = await client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-8",
             max_tokens=400,
             system=(
                 "당신은 Yellow Korea 커뮤니티 매니저의 어시스턴트입니다. "
@@ -200,7 +201,8 @@ async def generate_daily_insight(summary_text: str) -> str | None:
                 "1) 커뮤니티 분위기/관심사 한 줄 요약\n"
                 "2) 다음에 채팅방에 올리면 좋을 '정보 제공 메시지' 초안 1개 "
                 "(자연스럽고 짧게, 광고 느낌 없이). 사람들이 궁금해한 점에 답하는 내용이면 좋습니다.\n"
-                "평문으로 작성하고 마크다운 기호(**)는 쓰지 마세요."
+                "평문으로 작성하고 마크다운 기호(**)는 쓰지 마세요. "
+                "사고 과정은 노출하지 말고 최종 결과만 작성하세요."
             ),
             messages=[{"role": "user", "content": summary_text}],
         )
@@ -232,7 +234,7 @@ class YellowChatHandler:
         try:
             user_context = f"[유저: {user_name}] " if user_name else ""
             response = await self.client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-opus-4-8",
                 max_tokens=500,
                 system=SYSTEM_PROMPT,
                 messages=[

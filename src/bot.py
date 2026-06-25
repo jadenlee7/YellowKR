@@ -35,6 +35,10 @@ from src.config import (
     SPAM_MUTE_THRESHOLD,
     SPAM_MUTE_MINUTES,
     DAILY_REPORT_HOUR_KST,
+    WEEKLY_REPORT_ENABLED,
+    CAPTCHA_ENABLED,
+    CAPTCHA_TIMEOUT_SECONDS,
+    CAPTCHA_FAIL_ACTION,
     TWITTER_MAIN_USERNAME,
 )
 from src.yellow_knowledge import (
@@ -43,6 +47,7 @@ from src.yellow_knowledge import (
     is_yellow_related,
     generate_daily_insight,
 )
+from src.faq import match_faq
 from src.subscribers import SubscriberManager
 from src.stats import StatsManager, KST
 from src.moderation import (
@@ -350,6 +355,7 @@ def build_report_text(summary: dict, insight: str | None = None) -> str:
         f"👥 활성 유저: <b>{summary['active_users']}</b>명",
         f"🆕 신규 입장: <b>{summary['new_members']}</b>명",
         f"🛡️ 스팸 차단: <b>{summary['spam_removed']}</b>건",
+        f"⚡ FAQ 자동응답: <b>{summary.get('faq_hits', 0)}</b>건",
         "",
     ]
     if summary["leaderboard"]:
@@ -445,6 +451,84 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.warning(f"Failed to send daily report DM: {e}")
 
 
+# Day-of-week trend bars (Mon→Sun), scaled to the busiest day.
+def _trend_block(trend: list[tuple[str, int]]) -> str:
+    if not trend:
+        return ""
+    peak = max((c for _, c in trend), default=0) or 1
+    dow = ["월", "화", "수", "목", "금", "토", "일"]
+    lines = []
+    for date_str, count in trend:
+        try:
+            wd = datetime.strptime(date_str, "%Y-%m-%d").weekday()
+            label = dow[wd]
+        except ValueError:
+            label = date_str[5:]
+        bars = "▇" * round(8 * count / peak) if count else ""
+        lines.append(f"{label} {bars} {count}")
+    return "\n".join(lines)
+
+
+def build_weekly_report_text(summary: dict, insight: str | None = None) -> str:
+    lines = [
+        "<b>📈 Yellow Korea 주간 리포트</b>",
+        f"📅 {summary['start']} ~ {summary['end']}",
+        "",
+        f"💬 주간 메시지: <b>{summary['messages']}</b>",
+        f"👥 활성 유저: <b>{summary['active_users']}</b>명",
+        f"🆕 신규 입장: <b>{summary['new_members']}</b>명",
+        f"🛡️ 스팸 차단: <b>{summary['spam_removed']}</b>건",
+        f"⚡ FAQ 자동응답: <b>{summary['faq_hits']}</b>건",
+        "",
+    ]
+    trend = _trend_block(summary["trend"])
+    if trend:
+        lines.append("<b>📊 요일별 활동</b>")
+        lines.append(f"<code>{escape_html(trend)}</code>")
+        lines.append("")
+    if summary["leaderboard"]:
+        lines.append("<b>🏆 주간 활동 리더보드</b>")
+        lines.append(_format_leaderboard(summary["leaderboard"]))
+        lines.append("")
+    if summary["keywords"]:
+        kw = ", ".join(f"{escape_html(w)}({c})" for w, c in summary["keywords"])
+        lines.append("<b>🔥 주간 화제 키워드</b>")
+        lines.append(kw)
+        lines.append("")
+    if insight:
+        lines.append("<b>🤖 주간 인사이트 &amp; 추천 방향</b>")
+        lines.append(escape_html(insight))
+    return "\n".join(lines)
+
+
+async def send_weekly_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Scheduled daily; only fires the weekly DM on Mondays (last 7 days)."""
+    if not WEEKLY_REPORT_ENABLED or not OWNER_TELEGRAM_ID:
+        return
+    if datetime.now(KST).weekday() != 0:  # 0 = Monday
+        return
+    summary = stats_manager.week_summary()
+    insight = None
+    if summary["keywords"]:
+        kw = ", ".join(w for w, _ in summary["keywords"])
+        summary_text = (
+            f"지난 7일 화제 키워드: {kw}\n"
+            f"주간 메시지 {summary['messages']}개, 활성 유저 {summary['active_users']}명, "
+            f"신규 입장 {summary['new_members']}명.\n"
+            f"이번 주 커뮤니티 트렌드를 한 줄로 요약하고, 다음 주에 집중하면 좋을 "
+            f"주제/콘텐츠 방향 1~2개를 제안해줘."
+        )
+        insight = await generate_daily_insight(summary_text)
+    text = build_weekly_report_text(summary, insight)
+    try:
+        await context.bot.send_message(
+            chat_id=int(OWNER_TELEGRAM_ID), text=text, parse_mode=ParseMode.HTML
+        )
+        logger.info("Sent weekly report to owner.")
+    except Exception as e:
+        logger.warning(f"Failed to send weekly report DM: {e}")
+
+
 # ──────────────────────────────────────────────
 # Callback / Message Handlers
 # ──────────────────────────────────────────────
@@ -452,9 +536,16 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    data = query.data or ""
+
+    # New-member captcha verification (answers the query itself).
+    if data.startswith("verify:"):
+        await _handle_verify(update, context, data)
+        return
+
     await query.answer()
 
-    if query.data == "subscribe":
+    if data == "subscribe":
         chat_id = update.effective_chat.id
         if subscriber_manager.add(chat_id):
             await query.edit_message_text(
@@ -520,25 +611,139 @@ async def _handle_spam(update: Update, context: ContextTypes.DEFAULT_TYPE,
     )
 
 
+# Full messaging permissions used to lift a captcha mute on success.
+_OPEN_PERMS = ChatPermissions(
+    can_send_messages=True,
+    can_send_polls=True,
+    can_send_other_messages=True,
+    can_add_web_page_previews=True,
+)
+
+
 async def handle_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Count joins and screen obvious impersonator/spam display names."""
+    """Count joins; run button-click captcha (if enabled) to block mass bot joins."""
     msg = update.message
     if not msg or not msg.new_chat_members:
         return
+    chat_id = update.effective_chat.id
     for member in msg.new_chat_members:
         if member.is_bot:
             continue
         stats_manager.record_new_member()
-        # Light screen: an impersonator-style name gets a heads-up, not a ban.
         name = member.first_name or ""
         if is_suspicious_name(name):
             logger.info(f"Suspicious new member name (possible impersonator): {name}")
-    # Single, low-key welcome (auto-deletes so it doesn't clutter).
+
+        if CAPTCHA_ENABLED:
+            await _start_captcha(context, chat_id, member)
+        else:
+            await _send_temp(
+                context, chat_id,
+                f"👋 {escape_html(name or '유저')}님 환영합니다! 궁금한 건 편하게 물어보세요.",
+                delete_after=120,
+            )
+
+
+async def _start_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, member) -> None:
+    """Mute the new member and post a verify button; schedule a timeout."""
+    name = escape_html(member.first_name or "유저")
+
+    # Mute until verified. If the bot can't restrict, fall back to a welcome.
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id, member.id, permissions=ChatPermissions(can_send_messages=False)
+        )
+    except Exception as e:
+        logger.warning(f"Captcha: cannot restrict new member (bot needs admin?): {e}")
+        await _send_temp(
+            context, chat_id,
+            f"👋 {name}님 환영합니다! 궁금한 건 편하게 물어보세요.",
+            delete_after=120,
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("저는 사람입니다 ✅", callback_data=f"verify:{member.id}")]]
+    )
+    text = (
+        f"👋 {name}님 환영합니다!\n"
+        f"스팸 봇 방지를 위해 <b>{CAPTCHA_TIMEOUT_SECONDS}초</b> 안에 아래 버튼을 눌러 인증해주세요."
+    )
+    try:
+        sent = await context.bot.send_message(
+            chat_id, text, reply_markup=keyboard, parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.warning(f"Captcha: could not send prompt: {e}")
+        return
+
+    if context.job_queue:
+        context.job_queue.run_once(
+            _captcha_timeout, CAPTCHA_TIMEOUT_SECONDS,
+            data={"chat_id": chat_id, "user_id": member.id, "message_id": sent.message_id},
+            name=f"captcha:{chat_id}:{member.id}",
+        )
+
+
+async def _handle_verify(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    """Handle a captcha verify-button tap. Only the joining user may verify."""
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    try:
+        target_id = int(data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.answer()
+        return
+
+    clicker = update.effective_user
+    if clicker is None or clicker.id != target_id:
+        await query.answer("본인만 인증할 수 있어요.", show_alert=True)
+        return
+
+    try:
+        await context.bot.restrict_chat_member(chat_id, target_id, permissions=_OPEN_PERMS)
+    except Exception as e:
+        logger.warning(f"Captcha: could not lift restriction: {e}")
+
+    await query.answer("인증 완료! 환영합니다 🎉")
+
+    # Cancel the pending timeout job and delete the prompt.
+    if context.job_queue:
+        for job in context.job_queue.get_jobs_by_name(f"captcha:{chat_id}:{target_id}"):
+            job.schedule_removal()
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
     await _send_temp(
-        context, update.effective_chat.id,
-        "👋 Yellow Korea에 오신 걸 환영합니다! 궁금한 건 편하게 물어보세요.",
+        context, chat_id,
+        f"✅ {escape_html(clicker.first_name or '유저')}님 인증 완료! "
+        f"Yellow Korea에 오신 걸 환영합니다 🎉 궁금한 건 편하게 물어보세요.",
         delete_after=120,
     )
+
+
+async def _captcha_timeout(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """New member didn't verify in time: delete the prompt and kick/keep muted."""
+    d = context.job.data
+    chat_id, user_id, message_id = d["chat_id"], d["user_id"], d["message_id"]
+
+    try:
+        await context.bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+    if CAPTCHA_FAIL_ACTION == "kick":
+        try:
+            # Ban then immediately unban so they're removed but can rejoin later.
+            await context.bot.ban_chat_member(chat_id, user_id)
+            await context.bot.unban_chat_member(chat_id, user_id, only_if_banned=True)
+            logger.info(f"Captcha: kicked unverified member {user_id}")
+        except Exception as e:
+            logger.warning(f"Captcha: could not kick {user_id} (bot needs ban rights): {e}")
+    else:
+        logger.info(f"Captcha: member {user_id} left muted (no verification)")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -553,6 +758,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # separately). Replying to everything just clutters the conversation.
     if chat.type == "private":
         if not is_yellow_related(msg.text):
+            return
+        # Auto-FAQ: answer common questions from a canned response (no API call).
+        faq = match_faq(msg.text)
+        if faq:
+            stats_manager.record_faq_hit()
+            await msg.reply_text(faq, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             return
         response = md_to_html(await chat_handler.get_response(
             msg.text, user_name=user.first_name if user else ""
@@ -587,6 +798,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # 3. Reply only to Yellow-related messages (or mentions / replies to bot).
     if not _should_reply(msg, text, context.bot.id, context.bot.username):
+        return
+
+    # 4. Auto-FAQ: short, common questions get a canned answer (saves API cost).
+    faq = match_faq(text)
+    if faq:
+        stats_manager.record_faq_hit()
+        try:
+            await msg.reply_text(faq, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        except Exception:
+            await msg.reply_text(faq)
         return
 
     response = md_to_html(await chat_handler.get_response(text, user_name=user.first_name or ""))
@@ -798,5 +1019,14 @@ def create_bot() -> Application:
             name="daily_report",
         )
         logger.info(f"Daily report: {DAILY_REPORT_HOUR_KST}:00 KST -> owner DM")
+
+        # Weekly owner report DM (checked daily, fires only on Mondays)
+        if WEEKLY_REPORT_ENABLED:
+            job_queue.run_daily(
+                send_weekly_report,
+                time=dtime(hour=DAILY_REPORT_HOUR_KST, minute=5, tzinfo=KST),
+                name="weekly_report",
+            )
+            logger.info(f"Weekly report: Mondays {DAILY_REPORT_HOUR_KST}:05 KST -> owner DM")
 
     return app
