@@ -142,7 +142,7 @@ async def generate_tweet_discussion(tweet_text: str) -> str | None:
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         response = await client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=300,
             system=(
                 "당신은 Yellow Korea 텔레그램 커뮤니티 봇입니다. "
