@@ -191,7 +191,8 @@ async def generate_daily_insight(summary_text: str) -> str | None:
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         response = await client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-5-5",
+            extra_body={"thinking": {"type": "between_tools"}},
             max_tokens=400,
             system=(
                 "당신은 Yellow Korea 커뮤니티 매니저의 어시스턴트입니다. "
@@ -204,7 +205,7 @@ async def generate_daily_insight(summary_text: str) -> str | None:
             ),
             messages=[{"role": "user", "content": summary_text}],
         )
-        return response.content[0].text if response.content else None
+        return "".join(block.text for block in response.content if block.type == "text") or None
     except Exception as e:
         logger.warning(f"Failed to generate daily insight: {e}")
         return None
@@ -232,14 +233,15 @@ class YellowChatHandler:
         try:
             user_context = f"[유저: {user_name}] " if user_name else ""
             response = await self.client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5-5",
+                extra_body={"thinking": {"type": "between_tools"}},
                 max_tokens=500,
                 system=SYSTEM_PROMPT,
                 messages=[
                     {"role": "user", "content": f"{user_context}{user_message}"},
                 ],
             )
-            text = response.content[0].text if response.content else None
+            text = "".join(block.text for block in response.content if block.type == "text") or None
             return text or self._keyword_response(user_message)
         except Exception as e:
             logger.error(f"Claude API error: {e}")
